@@ -1,6 +1,8 @@
 import boto3
 import os
 
+"""Rekognition face collection and matching wrapper."""
+
 
 class FaceMatcher:
     def __init__(self, collection_id: str, bucket_name: str, confidence_threshold: float = 80.0):
@@ -19,6 +21,7 @@ class FaceMatcher:
             print(f"[Rekognition] Created collection: {self.collection_id}")
 
     def index_face(self, image_bytes: bytes, person_id: str) -> str:
+        """Upload image to S3 and index in Rekognition collection."""
         # Store image in S3
         s3_key = f"faces/{person_id}.jpg"
         self.s3.put_object(Bucket=self.bucket_name, Key=s3_key, Body=image_bytes)
@@ -40,6 +43,7 @@ class FaceMatcher:
         return face_id
 
     def match_face(self, image_bytes: bytes) -> str | None:
+        """Search Rekognition collection for a matching face from camera frame."""
         try:
             response = self.rekognition.search_faces_by_image(
                 CollectionId=self.collection_id,

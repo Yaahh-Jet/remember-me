@@ -1,6 +1,9 @@
 """
 setup_demo.py — Run this ONCE before the demo to preload faces + interactions.
 
+This script indexes face photos into Rekognition collection and populates
+DynamoDB interaction table with example entries.
+
 Place photos named after the person in the same folder:
   sarah.jpg, john.jpg, etc.
 

@@ -4,6 +4,8 @@ import winsound
 import tempfile
 import os
 
+"""Simple AWS Polly tts validation script. Runs one sample utterance and plays it."""
+
 polly = boto3.client("polly", region_name="us-east-1")
 
 response = polly.synthesize_speech(

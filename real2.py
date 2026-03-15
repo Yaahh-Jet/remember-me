@@ -2,18 +2,12 @@ import tkinter as tk
 from tkinter import font as tkfont
 import threading
 import time
-
-"""MemoireAR simple GUI version.
-
-Likewise uses Rekognition, TranscribeHandler, Bedrock summary, and optional TTS.
-"""
 import cv2
 from PIL import Image, ImageTk
 from face_handler import FaceMatcher
 from interaction_store import InteractionStore
 from summary_generator import SummaryGenerator
 from transcribe_handler import TranscribeHandler
-from voice_output import speak_summary
 from dotenv import load_dotenv
 import os
 
@@ -33,52 +27,49 @@ class MemoireApp:
         self.root.geometry("1100x720")
         self.root.resizable(False, False)
 
-        self.face_matcher     = FaceMatcher(COLLECTION_ID, BUCKET_NAME, CONFIDENCE)
+        self.face_matcher      = FaceMatcher(COLLECTION_ID, BUCKET_NAME, CONFIDENCE)
         self.interaction_store = InteractionStore(TABLE_NAME)
-        self.summary_gen      = SummaryGenerator()
-        self.transcriber      = TranscribeHandler()
+        self.summary_gen       = SummaryGenerator()
+        self.transcriber       = TranscribeHandler()
+        self.transcriber.on_interim_text = self._set_transcript
 
-        self.current_person   = None
-        self.running          = True
-        self.last_match_time  = 0
-        self.cooldown         = 30        # only scan every 30 seconds
-        self.is_recording     = False
-        self.has_recognized   = False     # lock after first recognition
+        self.current_person    = None
+        self.running           = True
+        self.last_match_time   = 0
+        self.cooldown          = 30
+        self.is_recording      = False
+        self.has_recognized    = False
 
         self._build_ui()
         self._start_camera()
 
-    # ── UI ───────────────────────────────────────────────
     def _build_ui(self):
         title_font  = tkfont.Font(family="Courier New", size=22, weight="bold")
         label_font  = tkfont.Font(family="Courier New", size=11, weight="bold")
         body_font   = tkfont.Font(family="Courier New", size=11)
         status_font = tkfont.Font(family="Courier New", size=10)
 
-        # header
         header = tk.Frame(self.root, bg="#0a0a0f")
         header.pack(fill="x", padx=24, pady=(18, 0))
-        tk.Label(header, text="◈ MEMOIRE", font=title_font,
+        tk.Label(header, text="MEMOIRE", font=title_font,
                  fg="#c8a96e", bg="#0a0a0f").pack(side="left")
         tk.Label(header, text="dementia face recognition assistant",
                  font=status_font, fg="#444455", bg="#0a0a0f").pack(side="left", padx=14)
-        self.status_dot = tk.Label(header, text="● SCANNING",
+        self.status_dot = tk.Label(header, text="SCANNING",
                                    font=status_font, fg="#3ddc84", bg="#0a0a0f")
         self.status_dot.pack(side="right")
 
         tk.Frame(self.root, bg="#222233", height=1).pack(fill="x", padx=24, pady=10)
 
-        # columns
         cols = tk.Frame(self.root, bg="#0a0a0f")
         cols.pack(fill="both", expand=True, padx=24)
 
-        # LEFT — camera
+        # LEFT
         left = tk.Frame(cols, bg="#0a0a0f")
         left.pack(side="left", fill="y")
 
         tk.Label(left, text="LIVE FEED", font=label_font,
                  fg="#555566", bg="#0a0a0f").pack(anchor="w", pady=(0, 6))
-
         cam_border = tk.Frame(left, bg="#222233", padx=2, pady=2)
         cam_border.pack()
         self.cam_label = tk.Label(cam_border, bg="#111120")
@@ -88,9 +79,8 @@ class MemoireApp:
                                      font=label_font, fg="#444455", bg="#0a0a0f", pady=8)
         self.person_badge.pack(anchor="w", pady=(10, 0))
 
-        # record button
         self.record_btn = tk.Button(
-            left, text="⏺  START RECORDING",
+            left, text="START RECORDING",
             font=label_font, fg="#0a0a0f", bg="#555566",
             relief="flat", padx=14, pady=8,
             state="disabled",
@@ -98,24 +88,21 @@ class MemoireApp:
         )
         self.record_btn.pack(fill="x", pady=(8, 0))
 
-        # new person button
         tk.Button(
-            left, text="🔄  NEW PERSON",
+            left, text="NEW PERSON",
             font=label_font, fg="#0a0a0f", bg="#444466",
             relief="flat", padx=14, pady=6,
             command=self._reset_for_new_person
         ).pack(fill="x", pady=(6, 0))
 
-        # recording status
         self.rec_status = tk.Label(left, text="",
                                    font=status_font, fg="#ff4444", bg="#0a0a0f")
         self.rec_status.pack(anchor="w", pady=(4, 0))
 
-        # RIGHT — panels
+        # RIGHT
         right = tk.Frame(cols, bg="#0a0a0f")
         right.pack(side="right", fill="both", expand=True, padx=(24, 0))
 
-        # live transcript
         tk.Label(right, text="LIVE TRANSCRIPT", font=label_font,
                  fg="#555566", bg="#0a0a0f").pack(anchor="w")
         trans_frame = tk.Frame(right, bg="#0d0d1a",
@@ -128,7 +115,6 @@ class MemoireApp:
                                        state="disabled", cursor="arrow")
         self.transcript_text.pack(fill="x")
 
-        # summary
         tk.Label(right, text="AI SUMMARY", font=label_font,
                  fg="#555566", bg="#0a0a0f").pack(anchor="w")
         sum_frame = tk.Frame(right, bg="#0d0d1a",
@@ -141,7 +127,6 @@ class MemoireApp:
                                     state="disabled", cursor="arrow")
         self.summary_text.pack(fill="x")
 
-        # interaction log
         tk.Label(right, text="INTERACTION LOG", font=label_font,
                  fg="#555566", bg="#0a0a0f").pack(anchor="w")
         log_frame = tk.Frame(right, bg="#0d0d1a",
@@ -154,14 +139,12 @@ class MemoireApp:
                                 state="disabled", cursor="arrow")
         self.log_text.pack(fill="both", expand=True)
 
-        # status bar
         tk.Frame(self.root, bg="#222233", height=1).pack(fill="x", padx=24, pady=(8, 0))
         self.bottom_status = tk.Label(self.root,
                                       text="System ready. Point camera at a known face.",
                                       font=status_font, fg="#444455", bg="#0a0a0f")
         self.bottom_status.pack(anchor="w", padx=24, pady=6)
 
-    # ── CAMERA ──────────────────────────────────────────
     def _start_camera(self):
         self.cap = cv2.VideoCapture(0)
         self._update_frame()
@@ -187,38 +170,34 @@ class MemoireApp:
 
         self.root.after(33, self._update_frame)
 
-    # ── FACE SCAN ───────────────────────────────────────
     def _scan_face(self, frame):
-        """Perform face scan with Rekognition and update UI on match or not."""
-        self._set_status("● SCANNING", "#3ddc84")
+        self._set_status("SCANNING", "#3ddc84")
         try:
             _, buf = cv2.imencode(".jpg", frame)
             person_id = self.face_matcher.match_face(buf.tobytes())
-
             if person_id:
-                self.current_person  = person_id
-                self.has_recognized  = True          # lock further scans
-                self._set_person_badge(f"✦ {person_id.upper()}", "#c8a96e")
-                self._set_bottom(f"Recognized: {person_id} — recording started automatically")
-                self._set_status("● RECOGNIZED", "#c8a96e")
+                self.current_person = person_id
+                self.has_recognized = True
+                self._set_person_badge(f">> {person_id.upper()}", "#c8a96e")
+                self._set_bottom(f"Recognized: {person_id} — loading history...")
+                self._set_status("RECOGNIZED", "#c8a96e")
                 self.root.after(0, lambda: self.record_btn.configure(
-                    state="normal", bg="#e84545", text="⏹  STOP RECORDING"
-                ))
+                    state="normal", bg="#e84545", text="STOP RECORDING"))
                 self._start_recording()
-                self._load_summary(person_id)
+                # load existing interactions immediately in background
+                threading.Thread(target=self._load_summary,
+                                 args=(person_id,), daemon=True).start()
             else:
                 self.current_person = None
                 self._set_person_badge("NO FACE DETECTED", "#444455")
                 self._set_bottom("No recognized face in frame.")
                 self.root.after(0, lambda: self.record_btn.configure(
-                    state="disabled", bg="#555566", text="⏺  START RECORDING"
-                ))
+                    state="disabled", bg="#555566", text="START RECORDING"))
         except Exception as e:
             self._set_bottom(f"Scan error: {e}")
+            print(f"[Scan error] {e}")
 
-    # ── RECORDING ───────────────────────────────────────
     def _reset_for_new_person(self):
-        """Reset everything to scan for a new face."""
         if self.is_recording:
             self._stop_recording()
         self.has_recognized  = False
@@ -229,11 +208,11 @@ class MemoireApp:
         self._set_transcript("")
         self.root.after(0, lambda: (
             self.record_btn.configure(
-                state="disabled", bg="#555566", text="⏺  START RECORDING"),
+                state="disabled", bg="#555566", text="START RECORDING"),
             self.rec_status.configure(text="")
         ))
         self._set_bottom("Ready for new person — point camera at a face.")
-        self._set_status("● SCANNING", "#3ddc84")
+        self._set_status("SCANNING", "#3ddc84")
 
     def _toggle_recording(self):
         if self.is_recording:
@@ -247,67 +226,60 @@ class MemoireApp:
         self.is_recording = True
         self.transcriber.start_recording()
         self.root.after(0, lambda: (
-            self.record_btn.configure(bg="#e84545", text="⏹  STOP RECORDING"),
-            self.rec_status.configure(text="🔴 Recording...")
+            self.record_btn.configure(bg="#e84545", text="STOP RECORDING"),
+            self.rec_status.configure(text="[REC] Recording...")
         ))
-        self._set_bottom("Recording conversation... press STOP when done.")
+        self._set_bottom("Recording... press STOP when done.")
 
     def _stop_recording(self):
         if not self.is_recording:
             return
-        self.is_recording   = False
-        # has_recognized stays TRUE — prevents auto restart
+        self.is_recording = False
         self.root.after(0, lambda: (
-            self.record_btn.configure(bg="#3ddc84", text="⏺  NEW RECORDING"),
-            self.rec_status.configure(text="⏳ Transcribing...")
+            self.record_btn.configure(bg="#3ddc84", text="NEW RECORDING"),
+            self.rec_status.configure(text="Transcribing...")
         ))
-        self._set_bottom("Transcribing with Amazon Transcribe... please wait (~30 sec)")
+        self._set_bottom("Transcribing... please wait")
         threading.Thread(target=self._process_transcript, daemon=True).start()
 
     def _process_transcript(self):
-        """Handle final transcription result and persist interactions."""
         try:
             transcript = self.transcriber.stop_and_transcribe()
-
+            print(f"[App] Transcript: {transcript[:80] if transcript else 'EMPTY'}")
             if transcript:
-                # show transcript on screen
                 self._set_transcript(transcript)
-
-                # store as interaction in DynamoDB
                 if self.current_person:
                     self.interaction_store.add_interaction(self.current_person, transcript)
-                    self._set_bottom("Transcript saved! Generating new summary...")
-
-                    # refresh summary with new interaction included
+                    print(f"[App] Saved interaction for {self.current_person}")
+                    self._set_bottom("Saved! Generating summary...")
+                    self.root.after(0, lambda: self.rec_status.configure(text="Saved!"))
                     self._load_summary(self.current_person)
-                    self.root.after(0, lambda: self.rec_status.configure(text="✅ Saved"))
             else:
                 self._set_bottom("No speech detected. Try again.")
                 self.root.after(0, lambda: self.rec_status.configure(text=""))
-
         except Exception as e:
+            print(f"[Transcript error] {e}")
             self._set_bottom(f"Transcribe error: {e}")
             self.root.after(0, lambda: self.rec_status.configure(text=""))
 
-    # ── SUMMARY ─────────────────────────────────────────
     def _load_summary(self, person_id):
-        """Fetch interactions from DynamoDB, generate summary, and trigger TTS."""
         try:
             interactions = self.interaction_store.get_interactions(person_id)
+            print(f"[App] {len(interactions)} interactions found for {person_id}")
             self._update_log(interactions)
             if interactions:
-                self._set_bottom("Generating summary with Amazon Bedrock...")
+                self._set_bottom("Generating summary...")
                 summary = self.summary_gen.generate(person_id, interactions)
+                print(f"[App] Summary: {summary[:60]}")
                 self._set_summary(summary)
                 self._set_bottom(f"Summary ready for {person_id}.")
-                # Speak the summary using Amazon Polly (non-blocking)
-                threading.Thread(target=speak_summary, args=(summary,), daemon=True).start()
             else:
                 self._set_summary("No past interactions yet — start recording!")
         except Exception as e:
+            print(f"[Summary error] {e}")
             self._set_bottom(f"Summary error: {e}")
+            self._set_summary(f"Error: {e}")
 
-    # ── UI HELPERS ───────────────────────────────────────
     def _set_status(self, text, color):
         self.root.after(0, lambda: self.status_dot.configure(text=text, fg=color))
 
@@ -351,7 +323,6 @@ class MemoireApp:
         self.root.destroy()
 
 
-# ── ENTRY ────────────────────────────────────────────────
 if __name__ == "__main__":
     root = tk.Tk()
     app = MemoireApp(root)

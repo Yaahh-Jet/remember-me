@@ -1,16 +1,17 @@
-import boto3
-import json
 import os
+from groq import Groq
 from interaction_store import InteractionRecord
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 class SummaryGenerator:
     def __init__(self):
-        self.client = boto3.client(
-            "bedrock-runtime",
-            region_name=os.getenv("AWS_REGION", "us-east-1")
-        )
-        self.model_id = "anthropic.claude-haiku-4-5-20251001-v1:0"
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise RuntimeError("GROQ_API_KEY not set in .env")
+        self.client = Groq(api_key=api_key)
 
     def generate(self, person_id: str, interactions: list[InteractionRecord]) -> str:
         interaction_text = "\n".join(
@@ -31,17 +32,14 @@ Write a warm, calm, reassuring summary in 2-3 sentences that:
 
 Do not use medical or clinical language. Be warm and gentle."""
 
-        body = json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 200,
-            "messages": [{"role": "user", "content": prompt}],
-        })
-
         try:
-            response = self.client.invoke_model(modelId=self.model_id, body=body)
-            result = json.loads(response["body"].read())
-            summary = result["content"][0]["text"]
-            print(f"[Bedrock] Summary generated for {person_id}")
+            response = self.client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=200,
+            )
+            summary = response.choices[0].message.content
+            print(f"[Groq] Summary generated for {person_id}")
             return summary
         except Exception as e:
-            raise RuntimeError(f"Bedrock error: {e}")
+            raise RuntimeError(f"Groq API error: {e}")

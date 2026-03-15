@@ -3,8 +3,12 @@ import os
 import tempfile
 import subprocess
 
+"""Text-to-speech support using AWS Polly."""
+
 
 def speak_summary(text: str):
+    """Generate speech wav for given text and play locally (Windows)."""
+
     try:
         polly = boto3.client("polly", region_name=os.getenv("AWS_REGION", "us-east-1"))
         response = polly.synthesize_speech(
@@ -17,7 +21,7 @@ def speak_summary(text: str):
 
         # write raw pcm to temp file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
-            # add WAV header manually
+            # add WAV header manually so winsound can play binary PCM
             import wave, struct
             pcm_data = response["AudioStream"].read()
             f_wav = wave.open(f.name, 'wb')

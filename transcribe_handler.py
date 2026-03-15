@@ -1,130 +1,117 @@
-import boto3
 import os
-import time
-import uuid
 import wave
 import threading
 import pyaudio
+import speech_recognition as sr
 from dotenv import load_dotenv
+
+"""Handles audio capture and speech recognition.
+
+Records from microphone in raw form, provides live interim text through callback,
+and performs full final transcript on saved WAV file.
+"""
 
 load_dotenv()
 
-REGION = os.getenv("AWS_REGION", "us-east-1")
-
-# Audio config
-CHUNK = 1024
-FORMAT = pyaudio.paInt16
+CHUNK    = 1024
+FORMAT   = pyaudio.paInt16
 CHANNELS = 1
-RATE = 16000
+RATE     = 16000
 
 
 class TranscribeHandler:
     def __init__(self):
-        self.s3 = boto3.client("s3", region_name=REGION)
-        self.transcribe = boto3.client("transcribe", region_name=REGION)
-        self.bucket = os.getenv("S3_BUCKET", "memoire-faces-yjt")
-
-        self.recording = False
-        self.frames = []
-        self.audio = pyaudio.PyAudio()
-        self.stream = None
-        self.thread = None
+        self.recording         = False
+        self.frames            = []
+        self.audio             = pyaudio.PyAudio()
+        self.stream            = None
+        self.thread            = None
+        self.on_interim_text   = None  # callback for live display
+        self.recognizer        = sr.Recognizer()
+        self.live_thread       = None
 
     def start_recording(self):
-        """Start capturing mic audio in background thread."""
+        """Begin recording and triggering live transcription in parallel."""
         self.recording = True
-        self.frames = []
+        self.frames    = []
+
+        # main recording thread
         self.thread = threading.Thread(target=self._record_loop, daemon=True)
         self.thread.start()
+
+        # live recognition thread
+        self.live_thread = threading.Thread(target=self._live_loop, daemon=True)
+        self.live_thread.start()
         print("[Transcribe] Recording started...")
 
     def _record_loop(self):
+        """Capture raw audio frames for final transcription."""
         self.stream = self.audio.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=RATE,
-            input=True,
+            format=FORMAT, channels=CHANNELS,
+            rate=RATE, input=True,
             frames_per_buffer=CHUNK,
         )
         while self.recording:
             data = self.stream.read(CHUNK, exception_on_overflow=False)
             self.frames.append(data)
-
         self.stream.stop_stream()
         self.stream.close()
 
+    def _live_loop(self):
+        """Show live interim text using mic while recording."""
+        mic = sr.Microphone()
+        with mic as source:
+            self.recognizer.adjust_for_ambient_noise(source, duration=0.3)
+        while self.recording:
+            try:
+                with mic as source:
+                    audio = self.recognizer.listen(
+                        source, timeout=2, phrase_time_limit=6
+                    )
+                text = self.recognizer.recognize_google(audio)
+                if text and self.on_interim_text:
+                    self.on_interim_text(f"🎙 {text}")
+                    print(f"[Live] {text}")
+            except sr.WaitTimeoutError:
+                pass
+            except sr.UnknownValueError:
+                pass
+            except Exception as e:
+                pass
+
     def stop_and_transcribe(self) -> str:
-        """Stop recording, upload to S3, run Transcribe job, return transcript."""
+        """Stop recording and transcribe full audio."""
         self.recording = False
+
         if self.thread:
-            self.thread.join(timeout=2)
+            self.thread.join(timeout=3)
 
         if not self.frames:
+            print("[Transcribe] No audio captured.")
             return ""
 
-        # Save WAV locally
-        job_id = str(uuid.uuid4())[:8]
-        wav_path = f"recording_{job_id}.wav"
-        s3_key = f"recordings/{job_id}.wav"
-
+        # save WAV
+        wav_path = "recording_final.wav"
         with wave.open(wav_path, 'wb') as wf:
             wf.setnchannels(CHANNELS)
             wf.setsampwidth(self.audio.get_sample_size(FORMAT))
             wf.setframerate(RATE)
             wf.writeframes(b"".join(self.frames))
 
-        print(f"[Transcribe] Saved recording: {wav_path}")
+        print(f"[Transcribe] Saved final recording: {wav_path}")
 
-        # Upload to S3
-        self.s3.upload_file(wav_path, self.bucket, s3_key)
-        os.remove(wav_path)
-        print(f"[Transcribe] Uploaded to S3: {s3_key}")
-
-        # Start Transcribe job
-        job_name = f"memoire-{job_id}"
-        self.transcribe.start_transcription_job(
-            TranscriptionJobName=job_name,
-            Media={"MediaFileUri": f"https://s3.amazonaws.com/{self.bucket}/{s3_key}"},
-            MediaFormat="wav",
-            LanguageCode="en-US",
-        )
-        print(f"[Transcribe] Job started: {job_name}")
-
-        # Poll until complete
-        transcript = self._poll_job(job_name)
-
-        # Cleanup S3 recording
+        # transcribe full recording
         try:
-            self.s3.delete_object(Bucket=self.bucket, Key=s3_key)
-        except Exception:
-            pass
+            with sr.AudioFile(wav_path) as source:
+                audio_data = self.recognizer.record(source)
+            transcript = self.recognizer.recognize_google(audio_data)
+            print(f"[Transcribe] Final transcript: {transcript}")
+            os.remove(wav_path)
+            return transcript
+        except sr.UnknownValueError:
+            print("[Transcribe] Could not understand audio.")
+            return ""
+        except Exception as e:
+            print(f"[Transcribe] Error: {e}")
+            return ""
 
-        return transcript
-
-    def _poll_job(self, job_name: str, timeout: int = 120) -> str:
-        """Poll Transcribe job until done, return transcript text."""
-        start = time.time()
-        while time.time() - start < timeout:
-            response = self.transcribe.get_transcription_job(
-                TranscriptionJobName=job_name
-            )
-            status = response["TranscriptionJob"]["TranscriptionJobStatus"]
-
-            if status == "COMPLETED":
-                uri = response["TranscriptionJob"]["Transcript"]["TranscriptFileUri"]
-                import urllib.request, json as _json
-                with urllib.request.urlopen(uri) as r:
-                    data = _json.loads(r.read())
-                transcript = data["results"]["transcripts"][0]["transcript"]
-                print(f"[Transcribe] Done: {transcript[:80]}...")
-                return transcript
-
-            elif status == "FAILED":
-                print("[Transcribe] Job failed.")
-                return ""
-
-            print(f"[Transcribe] Status: {status} — waiting...")
-            time.sleep(5)
-
-        print("[Transcribe] Timed out.")
-        return ""
