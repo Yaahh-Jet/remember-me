@@ -1,0 +1,6 @@
+boto3
+opencv-python
+Pillow
+python-dotenv
+pyaudio
+anthropic
