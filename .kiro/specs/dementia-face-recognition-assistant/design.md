@@ -30,7 +30,7 @@ flowchart TD
     C -.->|search_faces| G
     C -.->|store image| H[(S3 Bucket)]
     D -.->|put_item / query| I[(DynamoDB Table)]
-    E -.->|messages API| J[Bedrock API]
+    E -.->|messages API| J[Groq API]
 
     K[setup_demo.py] --> C
     K --> D
